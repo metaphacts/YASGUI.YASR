@@ -1,12 +1,14 @@
 {
   "name": "yasgui-yasr",
   "description": "Yet Another SPARQL Resultset GUI",
-  "version": "2.12.18",
+  "version": "2.12.21",
   "main": "src/main.js",
   "license": "MIT",
   "author": "Laurens Rietveld",
   "homepage": "http://yasr.yasgui.org",
   "devDependencies": {
+    "browserify-shim": "^3.8.12",
+    "debug": "^3.1.0",
     "bootstrap-sass": "^3.3.7",
     "browserify": "^13.1.0",
     "browserify-transform-tools": "^1.6.0",
@@ -70,22 +72,10 @@
     "url": "https://github.com/YASGUI/YASR.git"
   },
   "dependencies": {
-    "browserify-shim": "^3.8.12",
     "codemirror": "^5.17.0",
-    "color": "^1.0.3",
-    "colorbrewer": "^1.0.0",
-    "colormap": "^2.3.0",
-    "d3": "^4.1.1",
-    "datatables.net": "^1.10.15",
-    "datatables.net-dt": "^1.10.15",
-    "debug": "^3.1.0",
     "jquery": "^2.2.4",
     "jquery-ui": "1.10.5",
-    "leaflet": "^1.2.0",
     "lodash": "^4.16.1",
-    "npm-check": "^5.4.5",
-    "pivottable": "^2.1.0",
-    "wellknown": "^0.5.0",
     "yasgui-utils": "^1.6.7"
   },
   "browserify-shim": {
@@ -109,20 +99,8 @@
       "require": "codemirror",
       "global": "CodeMirror"
     },
-    "datatables": {
-      "require": "datatables",
-      "global": "jQuery"
-    },
-    "d3": {
-      "require": "d3",
-      "global": "d3"
-    },
     "jquery-ui/sortable": {
       "require": "jquery-ui/sortable",
-      "global": "jQuery"
-    },
-    "pivottable": {
-      "require": "pivottable",
       "global": "jQuery"
     }
   }
