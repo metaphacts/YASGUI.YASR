@@ -40,11 +40,8 @@ gulp.task("makeCss", ["copyCssDeps"], function() {
     .pipe(connect.reload());
 });
 var cssDeps = [
-  "./node_modules/datatables.net-dt/css/jquery.dataTables.css",
-  "./node_modules/pivottable/dist/pivot.css",
   "./node_modules/codemirror/lib/codemirror.css",
   "./node_modules/codemirror/addon/fold/foldgutter.css",
-  "./node_modules/leaflet/dist/leaflet.css"
 ];
 gulp.task("copyCssDeps", function() {
   return gulp

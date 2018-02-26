@@ -492,27 +492,7 @@ try {
   console.warn(e);
 }
 try {
-  module.exports.registerOutput("leaflet", require("./leaflet.js"));
-} catch (e) {
-  console.warn(e);
-}
-try {
-  module.exports.registerOutput("table", require("./table.js"));
-} catch (e) {
-  console.warn(e);
-}
-try {
   module.exports.registerOutput("error", require("./error.js"));
-} catch (e) {
-  console.warn(e);
-}
-try {
-  module.exports.registerOutput("pivot", require("./pivot.js"));
-} catch (e) {
-  console.warn(e);
-}
-try {
-  module.exports.registerOutput("gchart", require("./gchart.js"));
 } catch (e) {
   console.warn(e);
 }
