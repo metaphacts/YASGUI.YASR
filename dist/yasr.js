@@ -1848,12 +1848,14 @@ CodeMirror.registerHelper("fold", "include", function(cm, start) {
   CodeMirror.registerHelper("fold", "xml", function(cm, start) {
     var iter = new Iter(cm, start.line, 0);
     for (;;) {
-      var openTag = toNextTag(iter), end;
-      if (!openTag || !(end = toTagEnd(iter)) || iter.line != start.line) return;
+      var openTag = toNextTag(iter)
+      if (!openTag || iter.line != start.line) return
+      var end = toTagEnd(iter)
+      if (!end) return
       if (!openTag[1] && end != "selfClose") {
         var startPos = Pos(iter.line, iter.ch);
         var endPos = findMatchingClose(iter, openTag[2]);
-        return endPos && {from: startPos, to: endPos.from};
+        return endPos && cmp(endPos.from, startPos) > 0 ? {from: startPos, to: endPos.from} : null
       }
     }
   });
@@ -1970,17 +1972,10 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
       return ret(ch);
     } else if (ch == "=" && stream.eat(">")) {
       return ret("=>", "operator");
-    } else if (ch == "0" && stream.eat(/x/i)) {
-      stream.eatWhile(/[\da-f]/i);
-      return ret("number", "number");
-    } else if (ch == "0" && stream.eat(/o/i)) {
-      stream.eatWhile(/[0-7]/i);
-      return ret("number", "number");
-    } else if (ch == "0" && stream.eat(/b/i)) {
-      stream.eatWhile(/[01]/i);
+    } else if (ch == "0" && stream.match(/^(?:x[\da-f]+|o[0-7]+|b[01]+)n?/i)) {
       return ret("number", "number");
     } else if (/\d/.test(ch)) {
-      stream.match(/^\d*(?:\.\d*)?(?:[eE][+\-]?\d+)?/);
+      stream.match(/^\d*(?:n|(?:\.\d*)?(?:[eE][+\-]?\d+)?)?/);
       return ret("number", "number");
     } else if (ch == "/") {
       if (stream.eat("*")) {
@@ -1991,7 +1986,7 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
         return ret("comment", "comment");
       } else if (expressionAllowed(stream, state, 1)) {
         readRegexp(stream);
-        stream.match(/^\b(([gimyu])(?![gimyu]*\2))+\b/);
+        stream.match(/^\b(([gimyus])(?![gimyus]*\2))+\b/);
         return ret("regexp", "string-2");
       } else {
         stream.eat("=");
@@ -2021,7 +2016,7 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
           var kw = keywords[word]
           return ret(kw.type, kw.style, word)
         }
-        if (word == "async" && stream.match(/^(\s|\/\*.*?\*\/)*[\(\w]/, false))
+        if (word == "async" && stream.match(/^(\s|\/\*.*?\*\/)*[\[\(\w]/, false))
           return ret("async", "keyword", word)
       }
       return ret("variable", "variable", word)
@@ -2160,21 +2155,42 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
     pass.apply(null, arguments);
     return true;
   }
+  function inList(name, list) {
+    for (var v = list; v; v = v.next) if (v.name == name) return true
+    return false;
+  }
   function register(varname) {
-    function inList(list) {
-      for (var v = list; v; v = v.next)
-        if (v.name == varname) return true;
-      return false;
-    }
     var state = cx.state;
     cx.marked = "def";
     if (state.context) {
-      if (inList(state.localVars)) return;
-      state.localVars = {name: varname, next: state.localVars};
+      if (state.lexical.info == "var" && state.context && state.context.block) {
+        // FIXME function decls are also not block scoped
+        var newContext = registerVarScoped(varname, state.context)
+        if (newContext != null) {
+          state.context = newContext
+          return
+        }
+      } else if (!inList(varname, state.localVars)) {
+        state.localVars = new Var(varname, state.localVars)
+        return
+      }
+    }
+    // Fall through means this is global
+    if (parserConfig.globalVars && !inList(varname, state.globalVars))
+      state.globalVars = new Var(varname, state.globalVars)
+  }
+  function registerVarScoped(varname, context) {
+    if (!context) {
+      return null
+    } else if (context.block) {
+      var inner = registerVarScoped(varname, context.prev)
+      if (!inner) return null
+      if (inner == context.prev) return context
+      return new Context(inner, context.vars, true)
+    } else if (inList(varname, context.vars)) {
+      return context
     } else {
-      if (inList(state.globalVars)) return;
-      if (parserConfig.globalVars)
-        state.globalVars = {name: varname, next: state.globalVars};
+      return new Context(context.prev, new Var(varname, context.vars), false)
     }
   }
 
@@ -2184,15 +2200,23 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
 
   // Combinators
 
-  var defaultVars = {name: "this", next: {name: "arguments"}};
+  function Context(prev, vars, block) { this.prev = prev; this.vars = vars; this.block = block }
+  function Var(name, next) { this.name = name; this.next = next }
+
+  var defaultVars = new Var("this", new Var("arguments", null))
   function pushcontext() {
-    cx.state.context = {prev: cx.state.context, vars: cx.state.localVars};
-    cx.state.localVars = defaultVars;
+    cx.state.context = new Context(cx.state.context, cx.state.localVars, false)
+    cx.state.localVars = defaultVars
+  }
+  function pushblockcontext() {
+    cx.state.context = new Context(cx.state.context, cx.state.localVars, true)
+    cx.state.localVars = null
   }
   function popcontext() {
-    cx.state.localVars = cx.state.context.vars;
-    cx.state.context = cx.state.context.prev;
+    cx.state.localVars = cx.state.context.vars
+    cx.state.context = cx.state.context.prev
   }
+  popcontext.lex = true
   function pushlex(type, info) {
     var result = function() {
       var state = cx.state, indent = state.indented;
@@ -2217,19 +2241,19 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
   function expect(wanted) {
     function exp(type) {
       if (type == wanted) return cont();
-      else if (wanted == ";") return pass();
+      else if (wanted == ";" || type == "}" || type == ")" || type == "]") return pass();
       else return cont(exp);
     };
     return exp;
   }
 
   function statement(type, value) {
-    if (type == "var") return cont(pushlex("vardef", value.length), vardef, expect(";"), poplex);
+    if (type == "var") return cont(pushlex("vardef", value), vardef, expect(";"), poplex);
     if (type == "keyword a") return cont(pushlex("form"), parenExpr, statement, poplex);
     if (type == "keyword b") return cont(pushlex("form"), statement, poplex);
     if (type == "keyword d") return cx.stream.match(/^\s*$/, false) ? cont() : cont(pushlex("stat"), maybeexpression, expect(";"), poplex);
     if (type == "debugger") return cont(expect(";"));
-    if (type == "{") return cont(pushlex("}"), block, poplex);
+    if (type == "{") return cont(pushlex("}"), pushblockcontext, block, poplex, popcontext);
     if (type == ";") return cont();
     if (type == "if") {
       if (cx.state.lexical.info == "else" && cx.state.cc[cx.state.cc.length - 1] == poplex)
@@ -2251,21 +2275,26 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
       } else if (isTS && value == "namespace") {
         cx.marked = "keyword"
         return cont(pushlex("form"), expression, block, poplex)
+      } else if (isTS && value == "abstract") {
+        cx.marked = "keyword"
+        return cont(statement)
       } else {
         return cont(pushlex("stat"), maybelabel);
       }
     }
-    if (type == "switch") return cont(pushlex("form"), parenExpr, expect("{"), pushlex("}", "switch"),
-                                      block, poplex, poplex);
+    if (type == "switch") return cont(pushlex("form"), parenExpr, expect("{"), pushlex("}", "switch"), pushblockcontext,
+                                      block, poplex, poplex, popcontext);
     if (type == "case") return cont(expression, expect(":"));
     if (type == "default") return cont(expect(":"));
-    if (type == "catch") return cont(pushlex("form"), pushcontext, expect("("), funarg, expect(")"),
-                                     statement, poplex, popcontext);
+    if (type == "catch") return cont(pushlex("form"), pushcontext, maybeCatchBinding, statement, poplex, popcontext);
     if (type == "export") return cont(pushlex("stat"), afterExport, poplex);
     if (type == "import") return cont(pushlex("stat"), afterImport, poplex);
     if (type == "async") return cont(statement)
     if (value == "@") return cont(expression, statement)
     return pass(pushlex("stat"), expression, expect(";"), poplex);
+  }
+  function maybeCatchBinding(type) {
+    if (type == "(") return cont(funarg, expect(")"))
   }
   function expression(type, value) {
     return expressionInner(type, value, false);
@@ -2455,19 +2484,19 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
     }
   }
   function typeexpr(type, value) {
+    if (value == "keyof" || value == "typeof") {
+      cx.marked = "keyword"
+      return cont(value == "keyof" ? typeexpr : expressionNoComma)
+    }
     if (type == "variable" || value == "void") {
-      if (value == "keyof") {
-        cx.marked = "keyword"
-        return cont(typeexpr)
-      } else {
-        cx.marked = "type"
-        return cont(afterType)
-      }
+      cx.marked = "type"
+      return cont(afterType)
     }
     if (type == "string" || type == "number" || type == "atom") return cont(afterType);
     if (type == "[") return cont(pushlex("]"), commasep(typeexpr, "]", ","), poplex, afterType)
     if (type == "{") return cont(pushlex("}"), commasep(typeprop, "}", ",;"), poplex, afterType)
     if (type == "(") return cont(commasep(typearg, ")"), maybeReturnType)
+    if (type == "<") return cont(commasep(typeexpr, ">"), typeexpr)
   }
   function maybeReturnType(type) {
     if (type == "=>") return cont(typeexpr)
@@ -2484,9 +2513,10 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
       return cont(expression, maybetype, expect("]"), typeprop)
     }
   }
-  function typearg(type) {
-    if (type == "variable") return cont(typearg)
-    else if (type == ":") return cont(typeexpr)
+  function typearg(type, value) {
+    if (type == "variable" && cx.stream.match(/^\s*[?:]/, false) || value == "?") return cont(typearg)
+    if (type == ":") return cont(typeexpr)
+    return pass(typeexpr)
   }
   function afterType(type, value) {
     if (value == "<") return cont(pushlex(">"), commasep(typeexpr, ">"), poplex, afterType)
@@ -2674,7 +2704,7 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
         cc: [],
         lexical: new JSLexical((basecolumn || 0) - indentUnit, 0, "block", false),
         localVars: parserConfig.localVars,
-        context: parserConfig.localVars && {vars: parserConfig.localVars},
+        context: parserConfig.localVars && new Context(null, null, false),
         indented: basecolumn || 0
       };
       if (parserConfig.globalVars && typeof parserConfig.globalVars == "object")
@@ -2715,7 +2745,7 @@ CodeMirror.defineMode("javascript", function(config, parserConfig) {
         lexical = lexical.prev;
       var type = lexical.type, closing = firstChar == type;
 
-      if (type == "vardef") return lexical.indented + (state.lastType == "operator" || state.lastType == "," ? lexical.info + 1 : 0);
+      if (type == "vardef") return lexical.indented + (state.lastType == "operator" || state.lastType == "," ? lexical.info.length + 1 : 0);
       else if (type == "form" && firstChar == "{") return lexical.indented;
       else if (type == "form") return lexical.indented + indentUnit;
       else if (type == "stat")
@@ -2928,8 +2958,9 @@ CodeMirror.defineMode("xml", function(editorConf, config_) {
         stream.next();
       }
       return style;
-    };
+    }
   }
+
   function doctype(depth) {
     return function(stream, state) {
       var ch;
@@ -6709,6 +6740,8 @@ function json2Plugin() {
 }
 
 },{"./lib/json2":136}],136:[function(require,module,exports){
+/* eslint-disable */
+
 //  json2.js
 //  2016-10-28
 //  Public Domain.
@@ -7220,76 +7253,24 @@ var util = require('./util')
 var slice = util.slice
 var pluck = util.pluck
 var each = util.each
+var bind = util.bind
 var create = util.create
 var isList = util.isList
 var isFunction = util.isFunction
 var isObject = util.isObject
 
 module.exports = {
-	createStore: createStore,
+	createStore: createStore
 }
 
 var storeAPI = {
-	version: '2.0.4',
+	version: '2.0.12',
 	enabled: false,
-	storage: null,
-
-	// addStorage adds another storage to this store. The store
-	// will use the first storage it receives that is enabled, so
-	// call addStorage in the order of preferred storage.
-	addStorage: function(storage) {
-		if (this.enabled) { return }
-		if (this._testStorage(storage)) {
-			this._storage.resolved = storage
-			this.enabled = true
-			this.storage = storage.name
-		}
-	},
-
-	// addPlugin will add a plugin to this store.
-	addPlugin: function(plugin) {
-		var self = this
-
-		// If the plugin is an array, then add all plugins in the array.
-		// This allows for a plugin to depend on other plugins.
-		if (isList(plugin)) {
-			each(plugin, function(plugin) {
-				self.addPlugin(plugin)
-			})
-			return
-		}
-
-		// Keep track of all plugins we've seen so far, so that we
-		// don't add any of them twice.
-		var seenPlugin = pluck(this._seenPlugins, function(seenPlugin) { return (plugin === seenPlugin) })
-		if (seenPlugin) {
-			return
-		}
-		this._seenPlugins.push(plugin)
-
-		// Check that the plugin is properly formed
-		if (!isFunction(plugin)) {
-			throw new Error('Plugins must be function values that return objects')
-		}
-
-		var pluginProperties = plugin.call(this)
-		if (!isObject(pluginProperties)) {
-			throw new Error('Plugins must return an object of function properties')
-		}
-
-		// Add the plugin function properties to this store instance.
-		each(pluginProperties, function(pluginFnProp, propName) {
-			if (!isFunction(pluginFnProp)) {
-				throw new Error('Bad plugin property: '+propName+' from plugin '+plugin.name+'. Plugins should only return functions.')
-			}
-			self._assignPluginFnProp(pluginFnProp, propName)
-		})
-	},
-
+	
 	// get returns the value of the given key. If that value
 	// is undefined, it returns optionalDefaultValue instead.
 	get: function(key, optionalDefaultValue) {
-		var data = this._storage().read(this._namespacePrefix + key)
+		var data = this.storage.read(this._namespacePrefix + key)
 		return this._deserialize(data, optionalDefaultValue)
 	},
 
@@ -7299,27 +7280,27 @@ var storeAPI = {
 		if (value === undefined) {
 			return this.remove(key)
 		}
-		this._storage().write(this._namespacePrefix + key, this._serialize(value))
+		this.storage.write(this._namespacePrefix + key, this._serialize(value))
 		return value
 	},
 
 	// remove deletes the key and value stored at the given key.
 	remove: function(key) {
-		this._storage().remove(this._namespacePrefix + key)
+		this.storage.remove(this._namespacePrefix + key)
 	},
 
 	// each will call the given callback once for each key-value pair
 	// in this store.
 	each: function(callback) {
 		var self = this
-		this._storage().each(function(val, namespacedKey) {
-			callback(self._deserialize(val), namespacedKey.replace(self._namespaceRegexp, ''))
+		this.storage.each(function(val, namespacedKey) {
+			callback.call(self, self._deserialize(val), (namespacedKey || '').replace(self._namespaceRegexp, ''))
 		})
 	},
 
 	// clearAll will remove all the stored key-value pairs in this store.
 	clearAll: function() {
-		this._storage().clearAll()
+		this.storage.clearAll()
 	},
 
 	// additional functionality that can't live in plugins
@@ -7330,43 +7311,50 @@ var storeAPI = {
 		return (this._namespacePrefix == '__storejs_'+namespace+'_')
 	},
 
-	// namespace clones the current store and assigns it the given namespace
-	namespace: function(namespace) {
-		if (!this._legalNamespace.test(namespace)) {
-			throw new Error('store.js namespaces can only have alhpanumerics + underscores and dashes')
-		}
-		// create a prefix that is very unlikely to collide with un-namespaced keys
-		var namespacePrefix = '__storejs_'+namespace+'_'
-		return create(this, {
-			_namespacePrefix: namespacePrefix,
-			_namespaceRegexp: namespacePrefix ? new RegExp('^'+namespacePrefix) : null
-		})
-	},
-
 	// createStore creates a store.js instance with the first
 	// functioning storage in the list of storage candidates,
 	// and applies the the given mixins to the instance.
-	createStore: function(storages, plugins) {
-		return createStore(storages, plugins)
+	createStore: function() {
+		return createStore.apply(this, arguments)
 	},
+	
+	addPlugin: function(plugin) {
+		this._addPlugin(plugin)
+	},
+	
+	namespace: function(namespace) {
+		return createStore(this.storage, this.plugins, namespace)
+	}
 }
 
-function createStore(storages, plugins) {
-	var _privateStoreProps = {
-		_seenPlugins: [],
-		_namespacePrefix: '',
-		_namespaceRegexp: null,
-		_legalNamespace: /^[a-zA-Z0-9_\-]+$/, // alpha-numeric + underscore and dash
+function _warn() {
+	var _console = (typeof console == 'undefined' ? null : console)
+	if (!_console) { return }
+	var fn = (_console.warn ? _console.warn : _console.log)
+	fn.apply(_console, arguments)
+}
 
-		_storage: function() {
-			if (!this.enabled) {
-				throw new Error("store.js: No supported storage has been added! "+
-					"Add one (e.g store.addStorage(require('store/storages/cookieStorage')) "+
-					"or use a build with more built-in storages (e.g "+
-					"https://github.com/marcuswestin/store.js/tree/master/dist/store.legacy.min.js)")
-			}
-			return this._storage.resolved
-		},
+function createStore(storages, plugins, namespace) {
+	if (!namespace) {
+		namespace = ''
+	}
+	if (storages && !isList(storages)) {
+		storages = [storages]
+	}
+	if (plugins && !isList(plugins)) {
+		plugins = [plugins]
+	}
+
+	var namespacePrefix = (namespace ? '__storejs_'+namespace+'_' : '')
+	var namespaceRegexp = (namespace ? new RegExp('^'+namespacePrefix) : null)
+	var legalNamespaces = /^[a-zA-Z0-9_\-]*$/ // alpha-numeric + underscore and dash
+	if (!legalNamespaces.test(namespace)) {
+		throw new Error('store.js namespaces can only have alphanumerics + underscores and dashes')
+	}
+	
+	var _privateStoreProps = {
+		_namespacePrefix: namespacePrefix,
+		_namespaceRegexp: namespaceRegexp,
 
 		_testStorage: function(storage) {
 			try {
@@ -7421,14 +7409,80 @@ function createStore(storages, plugins) {
 
 			return (val !== undefined ? val : defaultVal)
 		},
+		
+		_addStorage: function(storage) {
+			if (this.enabled) { return }
+			if (this._testStorage(storage)) {
+				this.storage = storage
+				this.enabled = true
+			}
+		},
+
+		_addPlugin: function(plugin) {
+			var self = this
+
+			// If the plugin is an array, then add all plugins in the array.
+			// This allows for a plugin to depend on other plugins.
+			if (isList(plugin)) {
+				each(plugin, function(plugin) {
+					self._addPlugin(plugin)
+				})
+				return
+			}
+
+			// Keep track of all plugins we've seen so far, so that we
+			// don't add any of them twice.
+			var seenPlugin = pluck(this.plugins, function(seenPlugin) {
+				return (plugin === seenPlugin)
+			})
+			if (seenPlugin) {
+				return
+			}
+			this.plugins.push(plugin)
+
+			// Check that the plugin is properly formed
+			if (!isFunction(plugin)) {
+				throw new Error('Plugins must be function values that return objects')
+			}
+
+			var pluginProperties = plugin.call(this)
+			if (!isObject(pluginProperties)) {
+				throw new Error('Plugins must return an object of function properties')
+			}
+
+			// Add the plugin function properties to this store instance.
+			each(pluginProperties, function(pluginFnProp, propName) {
+				if (!isFunction(pluginFnProp)) {
+					throw new Error('Bad plugin property: '+propName+' from plugin '+plugin.name+'. Plugins should only return functions.')
+				}
+				self._assignPluginFnProp(pluginFnProp, propName)
+			})
+		},
+		
+		// Put deprecated properties in the private API, so as to not expose it to accidential
+		// discovery through inspection of the store object.
+		
+		// Deprecated: addStorage
+		addStorage: function(storage) {
+			_warn('store.addStorage(storage) is deprecated. Use createStore([storages])')
+			this._addStorage(storage)
+		}
 	}
 
-	var store = create(_privateStoreProps, storeAPI)
+	var store = create(_privateStoreProps, storeAPI, {
+		plugins: []
+	})
+	store.raw = {}
+	each(store, function(prop, propName) {
+		if (isFunction(prop)) {
+			store.raw[propName] = bind(store, prop)			
+		}
+	})
 	each(storages, function(storage) {
-		store.addStorage(storage)
+		store._addStorage(storage)
 	})
 	each(plugins, function(plugin) {
-		store.addPlugin(plugin)
+		store._addPlugin(plugin)
 	})
 	return store
 }
@@ -7452,7 +7506,7 @@ module.exports = {
 	isList: isList,
 	isFunction: isFunction,
 	isObject: isObject,
-	Global: Global,
+	Global: Global
 }
 
 function make_assign() {
@@ -7509,8 +7563,8 @@ function slice(arr, index) {
 }
 
 function each(obj, fn) {
-	pluck(obj, function(key, val) {
-		fn(key, val)
+	pluck(obj, function(val, key) {
+		fn(val, key)
 		return false
 	})
 }
@@ -7557,15 +7611,15 @@ function isObject(val) {
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 
 },{}],139:[function(require,module,exports){
-module.exports = {
+module.exports = [
 	// Listed in order of usage preference
-	'localStorage': require('./localStorage'),
-	'oldFF-globalStorage': require('./oldFF-globalStorage'),
-	'oldIE-userDataStorage': require('./oldIE-userDataStorage'),
-	'cookieStorage': require('./cookieStorage'),
-	'sessionStorage': require('./sessionStorage'),
-	'memoryStorage': require('./memoryStorage'),
-}
+	require('./localStorage'),
+	require('./oldFF-globalStorage'),
+	require('./oldIE-userDataStorage'),
+	require('./cookieStorage'),
+	require('./sessionStorage'),
+	require('./memoryStorage')
+]
 
 },{"./cookieStorage":140,"./localStorage":141,"./memoryStorage":142,"./oldFF-globalStorage":143,"./oldIE-userDataStorage":144,"./sessionStorage":145}],140:[function(require,module,exports){
 // cookieStorage is useful Safari private browser mode, where localStorage
@@ -7894,7 +7948,7 @@ module.exports = {
 	write: write,
 	each: each,
 	remove: remove,
-	clearAll: clearAll,
+	clearAll: clearAll
 }
 
 function sessionStorage() {
@@ -7926,28 +7980,31 @@ function clearAll() {
 
 },{"../src/util":138}],146:[function(require,module,exports){
 module.exports={
-  "_from": "yasgui-utils@^1.6.7",
-  "_id": "yasgui-utils@1.6.7",
+  "_args": [
+    [
+      "yasgui-utils@https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
+      "/home/artem/Work/github/YASGUI.YASR"
+    ]
+  ],
+  "_from": "yasgui-utils@https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
+  "_id": "yasgui-utils@https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
   "_inBundle": false,
   "_integrity": "sha1-K8/FoxVojeOuYFeIPZrjQrIF8mc=",
   "_location": "/yasgui-utils",
   "_phantomChildren": {},
   "_requested": {
-    "type": "range",
-    "registry": true,
-    "raw": "yasgui-utils@^1.6.7",
+    "type": "remote",
+    "raw": "yasgui-utils@https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
     "name": "yasgui-utils",
     "escapedName": "yasgui-utils",
-    "rawSpec": "^1.6.7",
-    "saveSpec": null,
-    "fetchSpec": "^1.6.7"
+    "rawSpec": "https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
+    "saveSpec": "https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
+    "fetchSpec": "https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz"
   },
   "_requiredBy": [
-    "/"
+    "/yasgui-yasqe"
   ],
-  "_resolved": "https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
-  "_shasum": "2bcfc5a315688de3ae6057883d9ae342b205f267",
-  "_spec": "yasgui-utils@^1.6.7",
+  "_spec": "https://registry.npmjs.org/yasgui-utils/-/yasgui-utils-1.6.7.tgz",
   "_where": "/home/artem/Work/github/YASGUI.YASR",
   "author": {
     "name": "Laurens Rietveld"
@@ -7955,11 +8012,9 @@ module.exports={
   "bugs": {
     "url": "https://github.com/YASGUI/Utils/issues"
   },
-  "bundleDependencies": false,
   "dependencies": {
     "store": "^2.0.4"
   },
-  "deprecated": false,
   "description": "Utils for YASGUI libs",
   "homepage": "https://github.com/YASGUI/Utils",
   "licenses": [
@@ -8200,7 +8255,7 @@ module.exports={
     "url": "https://github.com/YASGUI/YASR.git"
   },
   "dependencies": {
-    "codemirror": "^5.17.0",
+    "codemirror": "^5.39.0",
     "jquery": "^2.2.4",
     "jquery-ui": "1.10.5",
     "lodash": "^4.16.1",
