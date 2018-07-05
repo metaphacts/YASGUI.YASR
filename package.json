@@ -72,7 +72,7 @@
     "url": "https://github.com/YASGUI/YASR.git"
   },
   "dependencies": {
-    "codemirror": "^5.17.0",
+    "codemirror": "^5.39.0",
     "jquery": "^2.2.4",
     "jquery-ui": "1.10.5",
     "lodash": "^4.16.1",
